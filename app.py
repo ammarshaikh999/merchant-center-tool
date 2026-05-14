@@ -1,201 +1,262 @@
 import streamlit as st
-import requests
+import cloudscraper
+from bs4 import BeautifulSoup
 import csv
 import re
 import time
 import io
 import json
 import gspread
+from urllib.parse import urlparse
 from google.oauth2.service_account import Credentials
+import xml.etree.ElementTree as ET
 
 # ============================================================
 # PAGE CONFIG
 # ============================================================
-st.set_page_config(page_title="Merchant Center Tool", page_icon="🛍️", layout="wide")
+st.set_page_config(
+    page_title="Merchant Center Tool",
+    page_icon="🛍️",
+    layout="wide"
+)
+
 st.title("🛍️ Merchant Center Tool")
 
 # ============================================================
-# STORE CREDENTIALS
+# WEBSITES & SITEMAPS
 # ============================================================
-STORES = {
-    "Voggaci": {
-        "STORE_URL": "https://voggaci.com",
-        "CK": "ck_6a71cbd882f15cf58755dadec4657ad8c51481da",
-        "CS": "cs_e188acce5cb4a8ff31b2d50929fd8a93ecee7aed",
-    },
-    "The Movie Attire": {
-        "STORE_URL": "https://themovieattire.com",
-        "CK": "ck_55bf303c4013201868885ae52f671a5cd804b6c6",
-        "CS": "cs_6b9419eed0793f0e5bbafde5f4b252eda112f931",
-    },
-    "Nyoshopping": {
-        "STORE_URL": "https://nyoshopping.com",
-        "CK": "ck_2e8843d4709d3b7717f9ce512d535a8fa6aae467",
-        "CS": "cs_559384bfd5fbbfdd17167590f1fa786e41f35cf8",
-    },
-    "Jacket Cult": {
-        "STORE_URL": "https://jacketcult.shop",
-        "CK": "ck_9226b1b1c260e12500d7249a2a9e2d3bc14e6d16",
-        "CS": "cs_69410665a3da1caa4994a0ba24151c4d9c207e46",
-    }
+WEBSITES = {
+    "JacketCult": [
+        "https://jacketcult.shop/product-sitemap.xml",
+        "https://jacketcult.shop/product-sitemap2.xml"
+    ],
+    "TheMovieAttire": [
+        "http://themovieattire.com/product-sitemap.xml"
+    ],
+    "Urbanixity": [
+        "http://urbanixity.com/product-sitemap.xml"
+    ]
 }
 
 # ============================================================
-# GOOGLE SHEETS
+# GOOGLE SHEETS SETUP
 # ============================================================
 SHEET_ID = "1acOTN47TNWGBh6HEIJX9pYNMY31ZDRyQ--iFeIdxzgo"
 
 def get_spreadsheet():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID)
 
-def get_or_create_tab(spreadsheet, title):
+def get_or_create_tab(spreadsheet, title, rows="2000", cols="20"):
     try:
         return spreadsheet.worksheet(title)
     except:
-        return spreadsheet.add_worksheet(title=title, rows="2000", cols="25")
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
+# ============================================================
+# CLOUDSCRAPER - Cloudflare bypass
+# ============================================================
+def make_scraper():
+    return cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+    )
+
+# ============================================================
+# SITEMAP SCANNER
+# ============================================================
+def get_urls_from_sitemap(sitemap_url):
+    urls = []
+    seen = set()
+    try:
+        scraper = make_scraper()
+        response = scraper.get(sitemap_url, timeout=15)
+        root = ET.fromstring(response.content)
+        ns = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+        for url in root.findall('ns:url', ns):
+            loc = url.find('ns:loc', ns)
+            if loc is not None and '/product/' in loc.text:
+                u = loc.text.strip()
+                if u not in seen:
+                    seen.add(u)
+                    urls.append(u)
+    except Exception as e:
+        st.warning(f"Sitemap error: {sitemap_url} — {e}")
+    return urls
+
+def scan_all_sitemaps(website_name):
+    all_urls = []
+    seen = set()
+    for sitemap in WEBSITES.get(website_name, []):
+        for url in get_urls_from_sitemap(sitemap):
+            if url not in seen:
+                seen.add(url)
+                all_urls.append(url)
+    return all_urls
+
+# ============================================================
+# SCRAPING FUNCTION - Cloudflare bypass
+# ============================================================
+def scrape_product_details(url):
+    try:
+        scraper = make_scraper()
+        response = scraper.get(url, timeout=20)
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Cloudflare check
+        if "checking your browser" in soup.get_text().lower():
+            return None, []
+
+        # TITLE
+        title = ""
+        title_tag = soup.find('h1', class_='product_title') or soup.find('h1')
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+
+        # PRODUCT ID
+        product_id = ""
+        id_tag = soup.find('link', {'rel': 'shortlink'})
+        if id_tag and 'p=' in id_tag.get('href', ''):
+            product_id = id_tag['href'].split('p=')[-1]
+        else:
+            body = soup.find('body')
+            if body:
+                for cls in body.get('class', []):
+                    if cls.startswith('postid-'):
+                        product_id = cls.replace('postid-', '')
+                        break
+
+        # PRICE
+        price = ""
+        price_tag = soup.find('p', class_='price') or soup.find('span', class_='woocommerce-Price-amount')
+        if price_tag:
+            amount = price_tag.find('span', class_='woocommerce-Price-amount')
+            if amount:
+                price_text = re.sub(r'[^\d.]', '', amount.get_text(strip=True))
+                price = f"{price_text} USD"
+            else:
+                price_text = re.sub(r'[^\d.]', '', price_tag.get_text(strip=True))
+                price = f"{price_text} USD"
+
+        # SKU
+        sku = ""
+        sku_tag = soup.find('span', class_='sku')
+        if sku_tag:
+            sku = sku_tag.get_text(strip=True)
+
+        # BRAND
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace('www.', '')
+        brand = domain.split('.')[0].capitalize()
+
+        # DESCRIPTION
+        desc_panel = soup.find('div', id='tab-description') or soup.find('div', class_='description')
+        description = ""
+        if desc_panel:
+            paragraphs = []
+            for tag in desc_panel.find_all(['h2', 'h3', 'h4', 'p', 'li']):
+                text = tag.get_text(strip=True)
+                if not text:
+                    continue
+                if re.match(r'^(Material|Color|Gender|Size|Weight|Dimensions?|Product Spec)', text, re.IGNORECASE):
+                    continue
+                if "Product Specifications" in text:
+                    continue
+                paragraphs.append(text)
+            description = " ".join(paragraphs).strip()
+
+        # IMAGES
+        img_links = []
+        images = soup.select('.woocommerce-product-gallery__image img, .wp-post-image')
+        for img in images:
+            src = img.get('data-src') or img.get('src')
+            if src and src not in img_links:
+                img_links.append(src)
+        image_link = img_links[0] if img_links else ""
+        additional_image_link = ",".join(img_links[1:]) + "," if len(img_links) > 1 else ""
+
+        # COLOR
+        color = ""
+        short_desc = soup.find('div', class_='woocommerce-product-details__short-description')
+        if short_desc:
+            short_text = short_desc.get_text(separator=" ", strip=True)
+            color_match = re.search(r"Color:\s*(.+?)(?:\s{2,}|\||\n|$)", short_text)
+            if color_match:
+                color = color_match.group(1).strip()
+
+        # MATERIAL & GENDER
+        all_text = soup.get_text(separator=" ", strip=True)
+        material_match = re.search(r"Material:\s*(.*?)(?=\s*[A-Z][a-z]+:|$)", all_text)
+        material = material_match.group(1).strip() if material_match else ""
+
+        gender = ""
+        if "Size and Gender" in all_text:
+            gender = "Unisex"
+        elif "Men Size" in all_text:
+            gender = "Male"
+        elif "Women Size" in all_text:
+            gender = "Female"
+        else:
+            gender = "Unisex"
+
+        # SIZES
+        sizes = []
+        size_select = soup.find('select', {'name': 'attribute_pa_size'}) or \
+                      soup.find('select', {'name': 'attribute_size'}) or \
+                      soup.find('select', attrs={'name': re.compile(r'attribute.*size', re.I)})
+        if size_select:
+            for option in size_select.find_all('option'):
+                val = option.get('value', '').strip()
+                if val:
+                    sizes.append(val.upper())
+        if not sizes:
+            size_buttons = soup.select('.variable-items-wrapper .wvs-style-button, .swatch-option, li[data-value]')
+            for btn in size_buttons:
+                val = btn.get('data-value') or btn.get_text(strip=True)
+                if val and val.upper() not in sizes:
+                    sizes.append(val.upper())
+
+        primary_data = {
+            "id": product_id, "title": title, "description": description, "link": url,
+            "image_link": image_link, "additional image link": additional_image_link,
+            "condition": "New", "price": price, "availability": "in_stock",
+            "mpn": sku, "brand": brand,
+            "google_product_category": "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets",
+            "material": material, "product_type": "", "identifier_exists": "No",
+            "color": color, "gender": gender
+        }
+
+        supplemental_rows = []
+        for size in (sizes if sizes else [""]):
+            supplemental_rows.append({
+                "id": product_id, "title": title, "color": color, "gender": gender,
+                "age_group": "Adult", "brand": brand, "size": size,
+                "included_destination": "Free listings, Shopping ads, Dynamic remarketing",
+                "excluded_destination": "", "shipping_label": "Free Shipping",
+                "return_policy_label": "30 Days Returns"
+            })
+
+        return primary_data, supplemental_rows
+
+    except Exception as e:
+        return None, []
+
+# ============================================================
+# HELPER - Append to sheet
+# ============================================================
 def append_to_sheet(sheet, fieldnames, data_list):
     existing = sheet.get_all_values()
     if not existing:
-        rows = [fieldnames] + [[d.get(f, "") for f in fieldnames] for d in data_list]
+        rows = [fieldnames] + [[d[f] for f in fieldnames] for d in data_list]
         sheet.update(rows, value_input_option='RAW')
     else:
-        rows = [[d.get(f, "") for f in fieldnames] for d in data_list]
+        rows = [[d[f] for f in fieldnames] for d in data_list]
         sheet.append_rows(rows, value_input_option='RAW')
-
-# ============================================================
-# WOOCOMMERCE API FUNCTIONS
-# ============================================================
-def wc_get(store, endpoint, params={}):
-    url = f"{store['STORE_URL']}/wp-json/wc/v3/{endpoint}"
-    resp = requests.get(url, auth=(store['CK'], store['CS']), params=params, timeout=20)
-    return resp.json() if resp.status_code == 200 else None
-
-def get_all_products(store):
-    """Saare products ek page per 100 karke fetch karo"""
-    all_products = []
-    page = 1
-    while True:
-        products = wc_get(store, "products", {"per_page": 100, "page": page, "status": "publish"})
-        if not products:
-            break
-        all_products.extend(products)
-        if len(products) < 100:
-            break
-        page += 1
-        time.sleep(0.5)
-    return all_products
-
-def get_product_by_sku(store, sku):
-    products = wc_get(store, "products", {"sku": sku})
-    if products and len(products) > 0:
-        return products[0]
-    return None
-
-def get_variations(store, product_id):
-    variations = wc_get(store, f"products/{product_id}/variations", {"per_page": 100})
-    return variations or []
-
-def clean_description(html_text):
-    """HTML tags hata do aur clean text lo"""
-    if not html_text:
-        return ""
-    text = re.sub(r'<[^>]+>', ' ', html_text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def get_attribute(product, attr_name):
-    """Product attributes se value lo"""
-    for attr in product.get('attributes', []):
-        if attr_name.lower() in attr.get('name', '').lower():
-            options = attr.get('options', [])
-            return options[0] if options else ""
-    return ""
-
-def detect_gender(product):
-    """Product name/categories se gender detect karo"""
-    name = product.get('name', '').lower()
-    categories = [c.get('name', '').lower() for c in product.get('categories', [])]
-    tags = [t.get('name', '').lower() for t in product.get('tags', [])]
-    all_text = name + ' '.join(categories) + ' '.join(tags)
-
-    if 'women' in all_text or 'female' in all_text or 'girl' in all_text or "ladies" in all_text:
-        return "Female"
-    elif 'men' in all_text or 'male' in all_text or 'boy' in all_text:
-        return "Male"
-    return "Unisex"
-
-def build_primary(product, store_name):
-    """Primary feed row banao"""
-    images = product.get('images', [])
-    image_link = images[0]['src'] if images else ""
-    additional_images = ",".join([img['src'] for img in images[1:]]) + "," if len(images) > 1 else ""
-
-    price = product.get('price', '') or product.get('regular_price', '')
-    price_str = f"{price} USD" if price else ""
-
-    return {
-        "id": str(product.get('id', '')),
-        "title": product.get('name', ''),
-        "description": clean_description(product.get('description', '') or product.get('short_description', '')),
-        "link": product.get('permalink', ''),
-        "image_link": image_link,
-        "additional image link": additional_images,
-        "condition": "New",
-        "price": price_str,
-        "availability": "in_stock" if product.get('stock_status') == 'instock' else "out_of_stock",
-        "mpn": product.get('sku', ''),
-        "brand": store_name,
-        "google_product_category": "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets",
-        "material": get_attribute(product, 'material'),
-        "product_type": " > ".join([c.get('name', '') for c in product.get('categories', [])]),
-        "identifier_exists": "No",
-        "color": get_attribute(product, 'color'),
-        "gender": detect_gender(product)
-    }
-
-def build_supplemental_rows(product, store_name, variations):
-    """Supplemental feed rows banao - har size ke liye alag row"""
-    rows = []
-    color = get_attribute(product, 'color')
-    gender = detect_gender(product)
-    product_id = str(product.get('id', ''))
-    title = product.get('name', '')
-
-    sizes = []
-    # Variations se sizes lo
-    for var in variations:
-        for attr in var.get('attributes', []):
-            if 'size' in attr.get('name', '').lower():
-                val = attr.get('option', '').upper()
-                if val and val not in sizes:
-                    sizes.append(val)
-
-    # Agar variations nahi hain toh product attributes se
-    if not sizes:
-        size_attr = get_attribute(product, 'size')
-        if size_attr:
-            sizes = [size_attr.upper()]
-
-    for size in (sizes if sizes else [""]):
-        rows.append({
-            "id": product_id,
-            "title": title,
-            "color": color,
-            "gender": gender,
-            "age_group": "Adult",
-            "brand": store_name,
-            "size": size,
-            "included_destination": "Free listings, Shopping ads, Dynamic remarketing",
-            "excluded_destination": "",
-            "shipping_label": "Free Shipping",
-            "return_policy_label": "30 Days Returns"
-        })
-    return rows
 
 # ============================================================
 # FIELDNAMES
@@ -209,252 +270,255 @@ supplemental_fieldnames = ["id", "title", "color", "gender", "age_group", "brand
                            "included_destination", "excluded_destination",
                            "shipping_label", "return_policy_label"]
 
-db_fieldnames = ["sku", "product_id", "url", "store", "title"]
+db_fieldnames = ["sku", "url", "website", "title"]
 
 # ============================================================
 # TABS
 # ============================================================
-tab1, tab2, tab3 = st.tabs(["🚀 SKU se Scrape Karo", "🗄️ Product Database", "📦 Sab Products Fetch Karo"])
+tab1, tab2, tab3 = st.tabs(["🔗 URL se Scrape Karo", "🗄️ URL Database", "🔍 SKU se Search"])
 
 # ============================================================
-# TAB 1 - SKU se Scrape
+# TAB 1 - Manual URL Scraping
 # ============================================================
 with tab1:
-    st.subheader("SKU se Products Fetch Karo")
-    st.info("SKU daalo → WooCommerce API se seedha data aayega — koi Cloudflare issue nahi! ✅")
+    st.subheader("Product URLs paste karo")
+    st.info("Naye products neeche append honge — purana data safe rahega ✅")
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        store_choice_t1 = st.selectbox("Store select karo:", list(STORES.keys()), key="t1_store")
-    with col_b:
-        st.write("")
+    urls_input = st.text_area(
+        "Har URL alag line mein:",
+        height=200,
+        placeholder="https://jacketcult.shop/product/example-jacket/"
+    )
 
-    sku_input = st.text_area("SKUs daalo (har SKU alag line mein):", height=150,
-                              placeholder="JC-1234\nJC-5678")
-
-    if st.button("🚀 Fetch Karo", use_container_width=True, key="sku_fetch"):
-        skus = [s.strip() for s in sku_input.strip().split("\n") if s.strip()]
-        if not skus:
-            st.warning("Pehle SKU daalo!")
+    if st.button("🚀 Scraping Shuru Karo", use_container_width=True, key="scrape_btn"):
+        urls = [u.strip() for u in urls_input.strip().split("\n") if u.strip()]
+        if not urls:
+            st.warning("Pehle kuch URLs daalo!")
         else:
-            store = STORES[store_choice_t1]
-            all_primary, all_supplemental = [], []
-            progress = st.progress(0)
-
-            for i, sku in enumerate(skus, 1):
-                st.write(f"[{i}/{len(skus)}] SKU: {sku}")
-                product = get_product_by_sku(store, sku)
-                if product:
-                    variations = get_variations(store, product['id']) if product.get('type') == 'variable' else []
-                    primary = build_primary(product, store_choice_t1)
-                    supplemental = build_supplemental_rows(product, store_choice_t1, variations)
-                    all_primary.append(primary)
-                    all_supplemental.extend(supplemental)
-                    st.write(f"✅ {product.get('name')} — {len(supplemental)} sizes")
-                else:
-                    st.write(f"❌ SKU nahi mila: {sku}")
-                progress.progress(i / len(skus))
-                time.sleep(0.5)
-
-            if all_primary:
-                with st.spinner("Google Sheet update ho rahi hai..."):
-                    try:
-                        spreadsheet = get_spreadsheet()
-                        primary_sheet = get_or_create_tab(spreadsheet, "Primary Feed")
-                        supplemental_sheet = get_or_create_tab(spreadsheet, "Supplemental Feed")
-                        append_to_sheet(primary_sheet, primary_fieldnames, all_primary)
-                        time.sleep(2)
-                        append_to_sheet(supplemental_sheet, supplemental_fieldnames, all_supplemental)
-                        st.success("✅ Google Sheet update ho gayi!")
-                    except Exception as e:
-                        st.error(f"Sheet error: {e}")
-
-                out1 = io.StringIO()
-                csv.DictWriter(out1, fieldnames=primary_fieldnames).writeheader()
-                [csv.DictWriter(out1, fieldnames=primary_fieldnames).writerow(d) for d in all_primary]
-
-                out2 = io.StringIO()
-                csv.DictWriter(out2, fieldnames=supplemental_fieldnames).writeheader()
-                [csv.DictWriter(out2, fieldnames=supplemental_fieldnames).writerow(d) for d in all_supplemental]
-
-                st.success(f"🎉 {len(all_primary)} products done!")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.download_button("📥 Primary Feed CSV", out1.getvalue(), "primary_feed.csv", "text/csv", use_container_width=True)
-                with c2:
-                    st.download_button("📥 Supplemental Feed CSV", out2.getvalue(), "supplemental_feed.csv", "text/csv", use_container_width=True)
-                st.markdown(f"📊 **[Google Sheet dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
-
-# ============================================================
-# TAB 2 - Product Database
-# ============================================================
-with tab2:
-    st.subheader("🗄️ Product Database — Sab Products Save Karo")
-    st.info("Yeh tab store ke sab products scan karega aur SKU + URL + Title database mein save karega.")
-
-    store_choice_t2 = st.selectbox("Store select karo:", ["Sab Stores"] + list(STORES.keys()), key="t2_store")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        scan_db_btn = st.button("🔍 Database Scan & Save Karo", use_container_width=True)
-    with col2:
-        check_new_btn = st.button("🆕 Naye Products Check Karo", use_container_width=True)
-
-    if scan_db_btn:
-        stores_to_scan = list(STORES.keys()) if store_choice_t2 == "Sab Stores" else [store_choice_t2]
-        try:
-            spreadsheet = get_spreadsheet()
-            db_sheet = get_or_create_tab(spreadsheet, "URL Database")
-            existing_data = db_sheet.get_all_values()
-            existing_skus = set()
-            if len(existing_data) > 1:
-                sku_idx = existing_data[0].index('sku') if 'sku' in existing_data[0] else 0
-                existing_skus = {row[sku_idx] for row in existing_data[1:] if len(row) > sku_idx}
-
-            new_rows = []
-            for store_name in stores_to_scan:
-                store = STORES[store_name]
-                st.write(f"🔍 {store_name} scan ho raha hai...")
-                with st.spinner(f"{store_name} products fetch ho rahe hain..."):
-                    products = get_all_products(store)
-                added = 0
-                for p in products:
-                    sku = p.get('sku', '')
-                    if sku and sku not in existing_skus:
-                        new_rows.append([
-                            sku,
-                            str(p.get('id', '')),
-                            p.get('permalink', ''),
-                            store_name,
-                            p.get('name', '')
-                        ])
-                        existing_skus.add(sku)
-                        added += 1
-                st.write(f"   → {len(products)} total, {added} naye")
-
-            if new_rows:
-                if not existing_data:
-                    db_sheet.update([db_fieldnames] + new_rows, value_input_option='RAW')
-                else:
-                    db_sheet.append_rows(new_rows, value_input_option='RAW')
-                st.success(f"✅ {len(new_rows)} naye products database mein save ho gaye!")
-            else:
-                st.success("✅ Koi naya product nahi — database updated hai!")
-            st.markdown(f"📊 **[Database dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    if check_new_btn:
-        stores_to_scan = list(STORES.keys()) if store_choice_t2 == "Sab Stores" else [store_choice_t2]
-        try:
-            spreadsheet = get_spreadsheet()
-            db_sheet = get_or_create_tab(spreadsheet, "URL Database")
-            existing_data = db_sheet.get_all_values()
-            existing_skus = set()
-            if len(existing_data) > 1:
-                sku_idx = existing_data[0].index('sku') if 'sku' in existing_data[0] else 0
-                existing_skus = {row[sku_idx] for row in existing_data[1:] if len(row) > sku_idx}
-
-            new_products = []
-            for store_name in stores_to_scan:
-                store = STORES[store_name]
-                with st.spinner(f"{store_name} check ho raha hai..."):
-                    products = get_all_products(store)
-                for p in products:
-                    sku = p.get('sku', '')
-                    if sku and sku not in existing_skus:
-                        new_products.append({
-                            "store": store_name,
-                            "sku": sku,
-                            "title": p.get('name', ''),
-                            "url": p.get('permalink', ''),
-                            "id": str(p.get('id', ''))
-                        })
-
-            if new_products:
-                st.warning(f"🆕 {len(new_products)} naye products mile!")
-                for p in new_products:
-                    st.write(f"• **{p['store']}** | SKU: `{p['sku']}` | {p['title']}")
-                if st.button("✅ Inhe Database mein Add Karo"):
-                    rows = [[p['sku'], p['id'], p['url'], p['store'], p['title']] for p in new_products]
-                    db_sheet = get_or_create_tab(get_spreadsheet(), "URL Database")
-                    db_sheet.append_rows(rows, value_input_option='RAW')
-                    st.success("✅ Sab naye products add ho gaye!")
-            else:
-                st.success("✅ Koi naya product nahi — sab up to date hai!")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-# ============================================================
-# TAB 3 - Sab Products Feed mein Daalo
-# ============================================================
-with tab3:
-    st.subheader("📦 Sab Products Fetch Karo aur Feed Banao")
-    st.info("Ek store ke sab products ek baar mein Primary + Supplemental feed mein aa jayenge.")
-
-    store_choice_t3 = st.selectbox("Store select karo:", list(STORES.keys()), key="t3_store")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        fetch_all_btn = st.button("📦 Sab Products Fetch Karo", use_container_width=True)
-    with col2:
-        st.write("")
-        replace_or_append = st.radio("Mode:", ["Neeche Append Karo", "Sheet Clear Karke New Banao"], horizontal=True)
-
-    if fetch_all_btn:
-        store = STORES[store_choice_t3]
-        with st.spinner(f"{store_choice_t3} ke sab products aa rahe hain..."):
-            products = get_all_products(store)
-
-        if not products:
-            st.error("Koi product nahi mila ya API error!")
-        else:
-            st.info(f"{len(products)} products mile — feed ban rahi hai...")
-            all_primary, all_supplemental = [], []
-            progress = st.progress(0)
-
-            for i, product in enumerate(products, 1):
-                variations = get_variations(store, product['id']) if product.get('type') == 'variable' else []
-                primary = build_primary(product, store_choice_t3)
-                supplemental = build_supplemental_rows(product, store_choice_t3, variations)
-                all_primary.append(primary)
-                all_supplemental.extend(supplemental)
-                progress.progress(i / len(products))
-                if i % 10 == 0:
-                    time.sleep(0.5)
-
-            with st.spinner("Google Sheet update ho rahi hai..."):
+            st.info(f"Total {len(urls)} products scrape honge...")
+            with st.spinner("Google Sheet se connect ho raha hai..."):
                 try:
                     spreadsheet = get_spreadsheet()
                     primary_sheet = get_or_create_tab(spreadsheet, "Primary Feed")
                     supplemental_sheet = get_or_create_tab(spreadsheet, "Supplemental Feed")
+                    sheet_connected = True
+                    st.success("✅ Google Sheet connected!")
+                except Exception as e:
+                    st.error(f"Sheet error: {e}")
+                    sheet_connected = False
 
-                    if replace_or_append == "Sheet Clear Karke New Banao":
-                        primary_sheet.clear()
-                        supplemental_sheet.clear()
-                        time.sleep(1)
+            all_primary, all_supplemental = [], []
+            progress = st.progress(0)
+            status = st.empty()
 
+            for i, url in enumerate(urls, 1):
+                status.text(f"[{i}/{len(urls)}] Scraping...")
+                primary_data, supplemental_rows = scrape_product_details(url)
+                if primary_data:
+                    all_primary.append(primary_data)
+                    all_supplemental.extend(supplemental_rows)
+                    st.write(f"✅ {i}. {url}")
+                else:
+                    st.write(f"❌ {i}. Cloudflare block ya error: {url}")
+                progress.progress(i / len(urls))
+                time.sleep(3)
+
+            status.text("Sheet update ho rahi hai...")
+
+            if all_primary and sheet_connected:
+                try:
                     append_to_sheet(primary_sheet, primary_fieldnames, all_primary)
                     time.sleep(2)
                     append_to_sheet(supplemental_sheet, supplemental_fieldnames, all_supplemental)
                     st.success("✅ Google Sheet update ho gayi!")
                 except Exception as e:
-                    st.error(f"Sheet error: {e}")
+                    st.error(f"Sheet update error: {e}")
 
-            out1 = io.StringIO()
-            w1 = csv.DictWriter(out1, fieldnames=primary_fieldnames)
-            w1.writeheader()
-            w1.writerows(all_primary)
+            if all_primary:
+                out1 = io.StringIO()
+                w1 = csv.DictWriter(out1, fieldnames=primary_fieldnames)
+                w1.writeheader()
+                w1.writerows(all_primary)
 
-            out2 = io.StringIO()
-            w2 = csv.DictWriter(out2, fieldnames=supplemental_fieldnames)
-            w2.writeheader()
-            w2.writerows(all_supplemental)
+                out2 = io.StringIO()
+                w2 = csv.DictWriter(out2, fieldnames=supplemental_fieldnames)
+                w2.writeheader()
+                w2.writerows(all_supplemental)
 
-            st.success(f"🎉 {len(all_primary)} products, {len(all_supplemental)} supplemental rows!")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button("📥 Primary Feed CSV", out1.getvalue(), "primary_feed.csv", "text/csv", use_container_width=True)
-            with c2:
-                st.download_button("📥 Supplemental Feed CSV", out2.getvalue(), "supplemental_feed.csv", "text/csv", use_container_width=True)
-            st.markdown(f"📊 **[Google Sheet dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
+                st.success(f"🎉 {len(all_primary)} products done!")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button("📥 Primary Feed CSV", out1.getvalue(), "primary_feed.csv", "text/csv", use_container_width=True)
+                with col2:
+                    st.download_button("📥 Supplemental Feed CSV", out2.getvalue(), "supplemental_feed.csv", "text/csv", use_container_width=True)
+                st.markdown(f"📊 **[Google Sheet dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
+
+# ============================================================
+# TAB 2 - URL DATABASE
+# ============================================================
+with tab2:
+    st.subheader("🗄️ URL Database — Sitemap se URLs Save Karo")
+    st.info("Naye URLs neeche append honge — purane safe rahenge ✅")
+
+    website_choice = st.selectbox("Website select karo:", ["Sab Websites"] + list(WEBSITES.keys()))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        scan_btn = st.button("🔍 Sitemap Scan Karo & Save", use_container_width=True)
+    with col2:
+        check_new_btn = st.button("🆕 Naye Products Check Karo", use_container_width=True)
+
+    if scan_btn:
+        with st.spinner("Sitemaps scan ho rahi hain..."):
+            try:
+                spreadsheet = get_spreadsheet()
+                db_sheet = get_or_create_tab(spreadsheet, "URL Database")
+
+                existing_data = db_sheet.get_all_values()
+                existing_urls = set()
+                if len(existing_data) > 1:
+                    url_col_idx = existing_data[0].index('url') if 'url' in existing_data[0] else 1
+                    existing_urls = {row[url_col_idx] for row in existing_data[1:] if len(row) > url_col_idx}
+
+                websites_to_scan = list(WEBSITES.keys()) if website_choice == "Sab Websites" else [website_choice]
+                new_rows = []
+
+                for website in websites_to_scan:
+                    st.write(f"🔍 Scanning {website}...")
+                    urls = scan_all_sitemaps(website)
+                    added = 0
+                    for url in urls:
+                        if url not in existing_urls:
+                            new_rows.append([" ", url, website, ""])
+                            existing_urls.add(url)
+                            added += 1
+                    st.write(f"   → {len(urls)} total, {added} naye")
+
+                if new_rows:
+                    if not existing_data:
+                        db_sheet.update([db_fieldnames] + new_rows, value_input_option='RAW')
+                    else:
+                        db_sheet.append_rows(new_rows, value_input_option='RAW')
+                    st.success(f"✅ {len(new_rows)} naye URLs save ho gaye!")
+                else:
+                    st.success("✅ Koi naya URL nahi — database already updated hai!")
+
+                st.markdown(f"📊 **[URL Database dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    if check_new_btn:
+        with st.spinner("Naye products check ho rahe hain..."):
+            try:
+                spreadsheet = get_spreadsheet()
+                db_sheet = get_or_create_tab(spreadsheet, "URL Database")
+                existing_data = db_sheet.get_all_values()
+                existing_urls = set()
+                if len(existing_data) > 1:
+                    url_col_idx = existing_data[0].index('url') if 'url' in existing_data[0] else 1
+                    existing_urls = {row[url_col_idx] for row in existing_data[1:] if len(row) > url_col_idx}
+
+                websites_to_scan = list(WEBSITES.keys()) if website_choice == "Sab Websites" else [website_choice]
+                new_urls = []
+
+                for website in websites_to_scan:
+                    for url in scan_all_sitemaps(website):
+                        if url not in existing_urls:
+                            new_urls.append({"url": url, "website": website})
+
+                if new_urls:
+                    st.warning(f"🆕 {len(new_urls)} naye products mile!")
+                    for item in new_urls:
+                        st.write(f"• {item['website']}: {item['url']}")
+                    if st.button("✅ Inhe Database mein Add Karo"):
+                        rows = [[" ", item['url'], item['website'], ""] for item in new_urls]
+                        db_sheet.append_rows(rows, value_input_option='RAW')
+                        st.success("✅ Sab naye URLs add ho gaye!")
+                else:
+                    st.success("✅ Koi naya product nahi — sab up to date hai!")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+# ============================================================
+# TAB 3 - SKU SE SEARCH
+# ============================================================
+with tab3:
+    st.subheader("🔍 SKU se Product Dhundo aur Scrape Karo")
+    st.info("SKU daalo → URL database se match hoga → feed mein neeche append hoga ✅")
+
+    sku_input = st.text_area(
+        "SKUs daalo (har SKU alag line mein):",
+        height=150,
+        placeholder="JC-1234\nJC-5678"
+    )
+
+    if st.button("🔍 SKU se Scrape Karo", use_container_width=True):
+        skus = [s.strip() for s in sku_input.strip().split("\n") if s.strip()]
+        if not skus:
+            st.warning("Pehle SKU daalo!")
+        else:
+            try:
+                spreadsheet = get_spreadsheet()
+                db_sheet = get_or_create_tab(spreadsheet, "URL Database")
+                all_db = db_sheet.get_all_records()
+
+                sku_url_map = {}
+                for sku in skus:
+                    for row in all_db:
+                        if str(row.get('sku', '')).strip() == sku:
+                            sku_url_map[sku] = row['url']
+                            break
+
+                not_found = [s for s in skus if s not in sku_url_map]
+                if not_found:
+                    st.warning(f"Yeh SKUs database mein nahi mile: {', '.join(not_found)}")
+                    st.info("Pehle Tab 2 se sitemap scan karo aur Google Sheet mein SKU column fill karo.")
+
+                if sku_url_map:
+                    st.info(f"{len(sku_url_map)} products mile — scraping shuru...")
+                    primary_sheet = get_or_create_tab(spreadsheet, "Primary Feed")
+                    supplemental_sheet = get_or_create_tab(spreadsheet, "Supplemental Feed")
+
+                    all_primary, all_supplemental = [], []
+                    progress = st.progress(0)
+                    total = len(sku_url_map)
+
+                    for i, (sku, url) in enumerate(sku_url_map.items(), 1):
+                        st.write(f"[{i}/{total}] SKU: {sku} → {url}")
+                        primary_data, supplemental_rows = scrape_product_details(url)
+                        if primary_data:
+                            all_primary.append(primary_data)
+                            all_supplemental.extend(supplemental_rows)
+                            st.write(f"✅ Done")
+                        else:
+                            st.write(f"❌ Cloudflare block ya error")
+                        progress.progress(i / total)
+                        time.sleep(3)
+
+                    if all_primary:
+                        append_to_sheet(primary_sheet, primary_fieldnames, all_primary)
+                        time.sleep(2)
+                        append_to_sheet(supplemental_sheet, supplemental_fieldnames, all_supplemental)
+
+                        out1 = io.StringIO()
+                        w1 = csv.DictWriter(out1, fieldnames=primary_fieldnames)
+                        w1.writeheader()
+                        w1.writerows(all_primary)
+
+                        out2 = io.StringIO()
+                        w2 = csv.DictWriter(out2, fieldnames=supplemental_fieldnames)
+                        w2.writeheader()
+                        w2.writerows(all_supplemental)
+
+                        st.success(f"🎉 {len(all_primary)} products add ho gaye!")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.download_button("📥 Primary Feed", out1.getvalue(), "primary_feed.csv", "text/csv", use_container_width=True)
+                        with col2:
+                            st.download_button("📥 Supplemental Feed", out2.getvalue(), "supplemental_feed.csv", "text/csv", use_container_width=True)
+                        st.markdown(f"📊 **[Google Sheet dekho](https://docs.google.com/spreadsheets/d/{SHEET_ID})**")
+
+            except Exception as e:
+                st.error(f"Error: {e}")

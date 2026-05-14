@@ -154,6 +154,14 @@ def scrape_product_details(url):
         domain = parsed.netloc.replace('www.', '')
         brand = domain.split('.')[0].capitalize()
 
+        custom_brands = {
+            "jacketcult": "Jacket Cult",
+            "themovieattire": "The Movie Attire",
+            "urbanixity": "Urbanixity"
+        }
+        brand = custom_brands.get(domain_name, domain_name.title())
+
+
         # DESCRIPTION
         desc_panel = soup.find('div', id='tab-description') or soup.find('div', class_='description')
         description = ""

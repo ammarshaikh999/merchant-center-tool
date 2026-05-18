@@ -146,7 +146,7 @@ def get_sizes_improved(product, variations):
     return sorted_sizes
 
 def detect_gender(product):
-    """Simple & Clean Gender Logic"""
+    """Sirf tumhari requirement ke hisaab se"""
     
     attributes = product.get('attributes', [])
     
@@ -154,17 +154,13 @@ def detect_gender(product):
     has_men = False
     
     for attr in attributes:
-        attr_name = attr.get('name', '').lower()
+        name = attr.get('name', '').lower()
         
-        # Women Size check
-        if 'women' in attr_name or 'female' in attr_name or 'woman' in attr_name or 'ladies' in attr_name:
+        if "women size" in name or "women-size" in name or "women" in name:
             has_women = True
-        
-        # Men Size check
-        if 'men' in attr_name or 'male' in attr_name or 'man' in attr_name:
+        if "men size" in name or "men-size" in name or "men" in name:
             has_men = True
     
-    # Final Decision
     if has_women and has_men:
         return "Unisex"
     elif has_women:
@@ -172,15 +168,14 @@ def detect_gender(product):
     elif has_men:
         return "Male"
     
-    # Fallback Title check
+    # Title fallback
     title = product.get('name', '').lower()
-    if any(kw in title for kw in ['taylor swift', 'kate hudson', 'kate middleton', 'women', 'female', 'ladies']):
+    if "taylor swift" in title or "kate" in title or "women" in title:
         return "Female"
-    if any(kw in title for kw in ['men', 'male']):
+    if "men" in title:
         return "Male"
     
     return "Unisex"
-
 # ============================================================
 # BUILD FUNCTIONS
 # ============================================================

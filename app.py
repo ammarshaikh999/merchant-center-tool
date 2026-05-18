@@ -115,21 +115,26 @@ def clean_html(html_text):
     return text
 
 def get_attribute(product, *keywords):
+    """Attribute value lo — exact name match karo"""
     attributes = product.get('attributes', [])
     for attr in attributes:
         attr_name = attr.get('name', '').lower().replace('pa_', '')
         for kw in keywords:
-            if kw.lower() in attr_name:
+            if kw.lower() == attr_name or kw.lower() in attr_name:
                 options = attr.get('options', [])
                 if options:
                     return options[0].strip()
     return ""
 
 def get_sizes_from_variations(variations):
+    """Variations se sizes lo — agar attrs empty nahi hain"""
     sizes = []
     size_keywords = ['size', 'pa_size', 'taille']
     for var in variations:
-        for attr in var.get('attributes', []):
+        attrs = var.get('attributes', [])
+        if not attrs:
+            continue
+        for attr in attrs:
             attr_name = attr.get('name', '').lower().replace('pa_', '')
             if any(kw in attr_name for kw in size_keywords):
                 val = attr.get('option', '').strip()
@@ -138,22 +143,44 @@ def get_sizes_from_variations(variations):
     return sizes
 
 def get_sizes_from_attributes(product):
+    """Product attributes se saari sizes lo"""
     size_keywords = ['size', 'pa_size']
     for attr in product.get('attributes', []):
         attr_name = attr.get('name', '').lower().replace('pa_', '')
-        if any(kw in attr_name for kw in size_keywords):
+        if any(kw == attr_name or kw in attr_name for kw in size_keywords):
             return [o.strip() for o in attr.get('options', []) if o.strip()]
     return []
 
 def detect_gender(product):
+    """
+    Pehle Gender attribute se lo — warna name/category se detect karo
+    Debug se pata chala: Attributes mein 'Gender': ['Female', 'Male'] hota hai
+    """
+    # 1. Seedha Gender attribute check karo
+    for attr in product.get('attributes', []):
+        attr_name = attr.get('name', '').lower().replace('pa_', '')
+        if 'gender' in attr_name:
+            options = attr.get('options', [])
+            if options:
+                val = options[0].strip().lower()
+                if 'female' in val or 'women' in val or 'girl' in val:
+                    return "Female"
+                elif 'male' in val or 'men' in val or 'boy' in val:
+                    return "Male"
+                elif 'unisex' in val:
+                    return "Unisex"
+            # Multiple options — both male & female = Unisex
+            if len(options) > 1:
+                return "Unisex"
+
+    # 2. Agar attribute nahi mila toh name/category se detect karo
     name = product.get('name', '').lower()
     cats = ' '.join([c.get('name', '').lower() for c in product.get('categories', [])])
     tags = ' '.join([t.get('name', '').lower() for t in product.get('tags', [])])
-    desc = clean_html(product.get('short_description', '')).lower()
-    all_text = f"{name} {cats} {tags} {desc}"
-    if any(w in all_text for w in ['women', 'female', 'girl', 'ladies', "woman's", "women's"]):
+    all_text = f"{name} {cats} {tags}"
+    if any(w in all_text for w in ['women', 'female', 'girl', 'ladies']):
         return "Female"
-    elif any(w in all_text for w in ['men', 'male', 'boy', 'man', "men's", "man's"]):
+    elif any(w in all_text for w in ['men', 'male', 'boy']):
         return "Male"
     return "Unisex"
 

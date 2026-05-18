@@ -146,19 +146,38 @@ def get_sizes_improved(product, variations):
     return sorted_sizes
 
 def detect_gender(product):
-    for attr in product.get('attributes', []):
-        name = attr.get('name', '').lower().replace('pa_', '')
-        if 'gender' in name:
-            opts = [o.lower() for o in attr.get('options', [])]
-            if 'female' in opts and 'male' in opts:
-                return "Unisex"
-            if any(x in opts for x in ['female','women','girl']): return "Female"
-            if any(x in opts for x in ['male','men','boy']): return "Male"
+    """Simple & Clean Gender Logic"""
     
-    text = (product.get('name','') + " " + clean_html(product.get('description',''))).lower()
-    if "female" in text and "male" in text: return "Unisex"
-    if any(x in text for x in ["women","female","ladies"]): return "Female"
-    if any(x in text for x in ["men","male"]): return "Male"
+    attributes = product.get('attributes', [])
+    
+    has_women = False
+    has_men = False
+    
+    for attr in attributes:
+        attr_name = attr.get('name', '').lower()
+        
+        # Women Size check
+        if 'women' in attr_name or 'female' in attr_name or 'woman' in attr_name or 'ladies' in attr_name:
+            has_women = True
+        
+        # Men Size check
+        if 'men' in attr_name or 'male' in attr_name or 'man' in attr_name:
+            has_men = True
+    
+    # Final Decision
+    if has_women and has_men:
+        return "Unisex"
+    elif has_women:
+        return "Female"
+    elif has_men:
+        return "Male"
+    
+    # Fallback Title check
+    title = product.get('name', '').lower()
+    if any(kw in title for kw in ['taylor swift', 'kate hudson', 'kate middleton', 'women', 'female', 'ladies']):
+        return "Female"
+    if any(kw in title for kw in ['men', 'male']):
+        return "Male"
     
     return "Unisex"
 

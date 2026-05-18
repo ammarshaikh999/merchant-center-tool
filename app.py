@@ -150,17 +150,26 @@ def detect_gender(product):
     has_women = False
     has_men = False
 
-    # Attributes check
     for attr in product.get('attributes', []):
 
         name = attr.get('name', '').lower().strip()
+        slug = attr.get('slug', '').lower().strip()
 
-        # women-size
-        if 'women' in name or 'female' in name:
+        combined = f"{name} {slug}"
+
+        # Women detect
+        if any(x in combined for x in [
+            'women',
+            'female',
+            'ladies'
+        ]):
             has_women = True
 
-        # men-size
-        if 'men' in name or 'male' in name:
+        # Men detect
+        if any(x in combined for x in [
+            'men',
+            'male'
+        ]):
             has_men = True
 
     # Final logic
@@ -173,22 +182,13 @@ def detect_gender(product):
     elif has_men:
         return "Male"
 
-    # Fallback title check
+    # fallback title check
     title = product.get('name', '').lower()
 
-    female_keywords = ['women', 'female', 'ladies']
-    male_keywords = ['men', 'male']
-
-    title_has_women = any(k in title for k in female_keywords)
-    title_has_men = any(k in title for k in male_keywords)
-
-    if title_has_women and title_has_men:
-        return "Unisex"
-
-    elif title_has_women:
+    if any(x in title for x in ['women', 'female', 'ladies']):
         return "Female"
 
-    elif title_has_men:
+    if any(x in title for x in ['men', 'male']):
         return "Male"
 
     return "Unisex"

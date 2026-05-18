@@ -152,12 +152,12 @@ def detect_gender(product):
             opts = [o.lower() for o in attr.get('options', [])]
             if 'female' in opts and 'male' in opts:
                 return "Unisex"
-            if any(x in opts for x in ['female','women','girl']): return "Female"
+            if any(x in opts for x in ['women','female','girl']): return "Female"
             if any(x in opts for x in ['male','men','boy']): return "Male"
     
     text = (product.get('name','') + " " + clean_html(product.get('description',''))).lower()
     if "female" in text and "male" in text: return "Unisex"
-    if any(x in text for x in ["women","female","ladies"]): return "Female"
+    if any(x in text for x in ["women","female","girl"]): return "Female"
     if any(x in text for x in ["men","male"]): return "Male"
     
     return "Unisex"

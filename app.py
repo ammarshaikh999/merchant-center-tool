@@ -147,48 +147,55 @@ def get_sizes_improved(product, variations):
 
 def detect_gender(product):
 
-    has_women = False
-    has_men = False
+    text_parts = []
 
+    # Product title
+    text_parts.append(product.get('name', ''))
+
+    # Categories
+    for cat in product.get('categories', []):
+        text_parts.append(cat.get('name', ''))
+
+    # Attributes + options
     for attr in product.get('attributes', []):
 
-        name = attr.get('name', '').lower().strip()
-        slug = attr.get('slug', '').lower().strip()
+        text_parts.append(attr.get('name', ''))
+        text_parts.append(attr.get('slug', ''))
 
-        combined = f"{name} {slug}"
+        for opt in attr.get('options', []):
+            text_parts.append(str(opt))
 
-        # Women detect
-        if any(x in combined for x in [
-            'women',
-            'female',
-            'ladies'
-        ]):
-            has_women = True
+    full_text = " ".join(text_parts).lower()
 
-        # Men detect
-        if any(x in combined for x in [
-            'men',
-            'male'
-        ]):
-            has_men = True
+    # FEMALE
+    female_keywords = [
+        'women',
+        'woman',
+        'female',
+        'ladies',
+        'girl',
+        'girls'
+    ]
 
-    # Final logic
-    if has_women and has_men:
+    # MALE
+    male_keywords = [
+        'men',
+        'man',
+        'male',
+        'boys',
+        'boy'
+    ]
+
+    has_female = any(word in full_text for word in female_keywords)
+    has_male = any(word in full_text for word in male_keywords)
+
+    if has_female and has_male:
         return "Unisex"
 
-    elif has_women:
+    elif has_female:
         return "Female"
 
-    elif has_men:
-        return "Male"
-
-    # fallback title check
-    title = product.get('name', '').lower()
-
-    if any(x in title for x in ['women', 'female', 'ladies']):
-        return "Female"
-
-    if any(x in title for x in ['men', 'male']):
+    elif has_male:
         return "Male"
 
     return "Unisex"

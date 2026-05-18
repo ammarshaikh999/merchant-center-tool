@@ -146,35 +146,51 @@ def get_sizes_improved(product, variations):
     return sorted_sizes
 
 def detect_gender(product):
-    """Sirf tumhari requirement ke hisaab se"""
-    
-    attributes = product.get('attributes', [])
-    
+
     has_women = False
     has_men = False
-    
-    for attr in attributes:
-        name = attr.get('name', '').lower()
-        
-        if "women size" in name or "women-size" in name or "women" in name:
+
+    # Attributes check
+    for attr in product.get('attributes', []):
+
+        name = attr.get('name', '').lower().strip()
+
+        # women-size
+        if 'women' in name or 'female' in name:
             has_women = True
-        if "men size" in name or "men-size" in name or "men" in name:
+
+        # men-size
+        if 'men' in name or 'male' in name:
             has_men = True
-    
+
+    # Final logic
     if has_women and has_men:
         return "Unisex"
-    elif has_women_size:
+
+    elif has_women:
         return "Female"
-    elif has_men_size:
+
+    elif has_men:
         return "Male"
-    
-    # Title fallback
+
+    # Fallback title check
     title = product.get('name', '').lower()
-    if "taylor swift" in title or "kate" in title or "women" in title:
+
+    female_keywords = ['women', 'female', 'ladies']
+    male_keywords = ['men', 'male']
+
+    title_has_women = any(k in title for k in female_keywords)
+    title_has_men = any(k in title for k in male_keywords)
+
+    if title_has_women and title_has_men:
+        return "Unisex"
+
+    elif title_has_women:
         return "Female"
-    if "men" in title:
+
+    elif title_has_men:
         return "Male"
-    
+
     return "Unisex"
 # ============================================================
 # BUILD FUNCTIONS

@@ -87,7 +87,7 @@ def get_variations(store, product_id):
     return variations or []
 
 # ============================================================
-# DATA EXTRACTION - IMPROVED
+# DATA EXTRACTION
 # ============================================================
 def clean_html(html_text):
     if not html_text: return ""
@@ -107,10 +107,8 @@ def get_attribute(product, *keywords):
     return ""
 
 def extract_spec_from_text(text, spec_name):
-    """General function to extract Material, Color etc. from specifications"""
     if not text: return ""
     text_lower = text.lower()
-    
     pattern = rf'(?:{spec_name})[:\s-]*(.+?)(?=\s{{2,}}|\n|\||$|material|inner|front|collar|pockets|sleeves|size|weight|color|colour)'
     match = re.search(pattern, text_lower, re.IGNORECASE)
     if match:
@@ -123,31 +121,21 @@ def get_color_improved(product):
     color = get_attribute(product, 'color', 'colour', 'rang')
     if color: return color
     
-    short_desc = clean_html(product.get('short_description', ''))
-    full_desc = clean_html(product.get('description', ''))
-    title = product.get('name', '')
-    
-    for text in [short_desc, full_desc, title]:
+    for text in [clean_html(product.get('short_description', '')), clean_html(product.get('description', '')), product.get('name', '')]:
         if text:
             color = extract_spec_from_text(text, 'color|colour')
             if color: return color
-            # Fallback common colors
             common = re.findall(r'\b(black|white|red|blue|green|yellow|pink|purple|orange|grey|gray|navy|brown|beige|cream|maroon|burgundy|teal|gold|silver)\b', text.lower())
             if common:
                 unique = list(dict.fromkeys(common))
-                return " and ".join([c.title() for c in unique]) if len(unique)>1 else unique[0].title()
+                return " and ".join([c.title() for c in unique]) if len(unique) > 1 else unique[0].title()
     return ""
 
 def get_material_improved(product):
-    """Material Specifications se extract karega"""
     material = get_attribute(product, 'material', 'fabric', 'kapra')
     if material: return material
     
-    short_desc = clean_html(product.get('short_description', ''))
-    full_desc = clean_html(product.get('description', ''))
-    title = product.get('name', '')
-    
-    for text in [short_desc, full_desc, title]:
+    for text in [clean_html(product.get('short_description', '')), clean_html(product.get('description', '')), product.get('name', '')]:
         if text:
             mat = extract_spec_from_text(text, 'material|fabric')
             if mat: return mat
@@ -155,43 +143,48 @@ def get_material_improved(product):
 
 def get_sizes_from_variations(variations):
     sizes = []
-    size_keywords = ['size', 'pa_size', 'taille']
     for var in variations:
         for attr in var.get('attributes', []):
             attr_name = attr.get('name', '').lower().replace('pa_', '')
-            if any(kw in attr_name for kw in size_keywords):
+            if 'size' in attr_name:
                 val = attr.get('option', '').strip()
-                if val and val.upper() not in [s.upper() for s in sizes]:
+                if val and val not in sizes:
                     sizes.append(val)
     return sizes
 
 def get_sizes_from_attributes(product):
-    size_keywords = ['size', 'pa_size']
     for attr in product.get('attributes', []):
         attr_name = attr.get('name', '').lower().replace('pa_', '')
-        if any(kw == attr_name or kw in attr_name for kw in size_keywords):
+        if 'size' in attr_name:
             return [o.strip() for o in attr.get('options', []) if o.strip()]
     return []
 
 def detect_gender(product):
+    # 1. Gender Attribute se
     for attr in product.get('attributes', []):
         attr_name = attr.get('name', '').lower().replace('pa_', '')
         if 'gender' in attr_name:
-            options = attr.get('options', [])
-            if options:
-                val = options[0].strip().lower()
-                if any(x in val for x in ['female','women','girl']): return "Female"
-                elif any(x in val for x in ['male','men','boy']): return "Male"
-                elif 'unisex' in val: return "Unisex"
-            if len(options) > 1: return "Unisex"
+            options = [o.lower() for o in attr.get('options', [])]
+            if 'female' in options and 'male' in options:
+                return "Unisex"
+            if any(x in options for x in ['female', 'women', 'girl']):
+                return "Female"
+            if any(x in options for x in ['male', 'men', 'boy']):
+                return "Male"
     
-    name = product.get('name', '').lower()
-    cats = ' '.join([c.get('name', '').lower() for c in product.get('categories', [])])
-    tags = ' '.join([t.get('name', '').lower() for t in product.get('tags', [])])
-    all_text = f"{name} {cats} {tags}"
-    if any(w in all_text for w in ['women', 'female', 'girl', 'ladies']): return "Female"
-    elif any(w in all_text for w in ['men', 'male', 'boy']): return "Male"
-    return "Unisex"
+    # 2. Description / Title se check
+    full_text = (clean_html(product.get('description', '')) + " " + 
+                 clean_html(product.get('short_description', '')) + " " + 
+                 product.get('name', '')).lower()
+    
+    if "female" in full_text and "male" in full_text:
+        return "Unisex"
+    if any(x in full_text for x in ["women size", "female size", "ladies"]):
+        return "Female"
+    if any(x in full_text for x in ["men size", "male size"]):
+        return "Male"
+    
+    return "Unisex"   # Default
 
 def get_product_category(product):
     cats = [c.get('name', '') for c in product.get('categories', [])]
@@ -202,11 +195,12 @@ def debug_product(product):
     st.write("**Name:**", product.get('name'))
     st.write("**SKU:**", product.get('sku'))
     st.write("**Type:**", product.get('type'))
+    st.write("**Extracted Color:**", get_color_improved(product))
+    st.write("**Extracted Material:**", get_material_improved(product))
+    st.write("**Extracted Gender:**", detect_gender(product))
     st.write("**Attributes:**")
     for a in product.get('attributes', []):
         st.write(f" - `{a.get('name')}` : {a.get('options')}")
-    st.write("**Extracted Color:**", get_color_improved(product))
-    st.write("**Extracted Material:**", get_material_improved(product))
 
 # ============================================================
 # BUILD FUNCTIONS
@@ -237,7 +231,7 @@ def build_primary(product, store_name):
         "brand": store_name,
         "google_product_category": "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets",
         "material": material,
-        "product_type": "",
+        "product_type": get_product_category(product),
         "identifier_exists": "No",
         "color": color,
         "gender": detect_gender(product)
@@ -249,10 +243,7 @@ def build_supplemental_rows(product, store_name, variations):
     product_id = str(product.get('id', ''))
     title = product.get('name', '')
 
-    if variations:
-        sizes = get_sizes_from_variations(variations)
-    else:
-        sizes = get_sizes_from_attributes(product)
+    sizes = get_sizes_from_variations(variations) if variations else get_sizes_from_attributes(product)
 
     rows = []
     for size in (sizes if sizes else [""]):
@@ -274,30 +265,18 @@ def build_supplemental_rows(product, store_name, variations):
 # ============================================================
 # FIELDNAMES
 # ============================================================
-primary_fieldnames = [
-    "id", "title", "description", "link", "image_link", "additional image link",
-    "condition", "price", "availability", "mpn", "brand",
-    "google_product_category", "material", "product_type",
-    "identifier_exists", "color", "gender"
-]
-
-supplemental_fieldnames = [
-    "id", "title", "color", "gender", "age_group", "brand", "size",
-    "included_destination", "excluded_destination",
-    "shipping_label", "return_policy_label"
-]
+primary_fieldnames = ["id", "title", "description", "link", "image_link", "additional image link", "condition", "price", "availability", "mpn", "brand", "google_product_category", "material", "product_type", "identifier_exists", "color", "gender"]
+supplemental_fieldnames = ["id", "title", "color", "gender", "age_group", "brand", "size", "included_destination", "excluded_destination", "shipping_label", "return_policy_label"]
 
 # ============================================================
 # TABS
 # ============================================================
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 SKU se Fetch Karo", "🗄️ Product Database", "📦 Sab Products", "🔍 Debug (Test)"])
 
-# ============================================================
-# TAB 1
-# ============================================================
+# TAB 1 (SKU Fetch)
 with tab1:
     st.subheader("SKU se Products Fetch Karo")
-    st.info("Color + Material ab Product Specifications se lega ✅")
+    st.info("Color + Material + Gender + Sizes ab sahi se extract honge")
     store_choice_t1 = st.selectbox("Store select karo:", list(STORES.keys()), key="t1_store")
     sku_input = st.text_area("SKUs daalo (har SKU alag line mein):", height=150, placeholder="JC-1234\nJC-5678")
    
@@ -318,13 +297,12 @@ with tab1:
                     supplemental = build_supplemental_rows(product, store_choice_t1, variations)
                     all_primary.append(primary)
                     all_supplemental.extend(supplemental)
-                    st.write(f"✅ **{product.get('name')}** | **Color:** `{primary['color']}` | **Material:** `{primary['material']}`")
+                    st.write(f"✅ **{product.get('name')}** | Color: `{primary['color']}` | Material: `{primary['material']}` | Gender: `{primary['gender']}` | Sizes: `{[r['size'] for r in supplemental]}`")
                 else:
                     st.write(f"❌ SKU nahi mila: `{sku}`")
                 progress.progress(i / len(skus))
                 time.sleep(0.3)
             
-            # ... (baaki sheet + download code same rakha hai)
             if all_primary:
                 with st.spinner("Google Sheet update ho rahi hai..."):
                     try:
@@ -338,7 +316,6 @@ with tab1:
                     except Exception as e:
                         st.error(f"Sheet error: {e}")
                 
-                # Download buttons
                 out1 = io.StringIO()
                 w1 = csv.DictWriter(out1, fieldnames=primary_fieldnames)
                 w1.writeheader(); w1.writerows(all_primary)
@@ -348,9 +325,21 @@ with tab1:
                 
                 st.success(f"🎉 {len(all_primary)} products done!")
                 c1, c2 = st.columns(2)
-                with c1: st.download_button("📥 Primary Feed CSV", out1.getvalue(), "primary_feed.csv", "text/csv", use_container_width=True)
-                with c2: st.download_button("📥 Supplemental Feed CSV", out2.getvalue(), "supplemental_feed.csv", "text/csv", use_container_width=True)
+                with c1: st.download_button("📥 Primary Feed", out1.getvalue(), "primary.csv", "text/csv", use_container_width=True)
+                with c2: st.download_button("📥 Supplemental Feed", out2.getvalue(), "supplemental.csv", "text/csv", use_container_width=True)
 
-# Baaki tabs (TAB 2,3,4) same rakhe hain. Agar error aaye toh batao.
+# TAB 4 - Debug
+with tab4:
+    st.subheader("🔍 Debug")
+    store_choice_t4 = st.selectbox("Store:", list(STORES.keys()), key="t4_store")
+    debug_sku = st.text_input("SKU daalo:", placeholder="Arirang wala SKU")
+    if st.button("🔍 Raw Data Dekho"):
+        if debug_sku:
+            product = get_product_by_sku(STORES[store_choice_t4], debug_sku.strip())
+            if product:
+                debug_product(product)
+                if product.get('type') == 'variable':
+                    vars = get_variations(STORES[store_choice_t4], product['id'])
+                    st.write("**Sizes Found:**", get_sizes_from_variations(vars))
 
-st.sidebar.success("✅ Color + Material ab Specifications se lega")
+st.sidebar.success("✅ Gender + Sizes Fixed")

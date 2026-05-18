@@ -1,6 +1,5 @@
 streamlit
-requests
+curl_cffi
 beautifulsoup4
 gspread
 google-auth
-cloudscraper

@@ -163,9 +163,9 @@ def detect_gender(product):
     
     if has_women and has_men:
         return "Unisex"
-    elif has_women:
+    elif has_women size:
         return "Female"
-    elif has_men:
+    elif has_men size:
         return "Male"
     
     # Title fallback

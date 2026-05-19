@@ -40,10 +40,10 @@ def append_to_sheet(sheet, fieldnames, data_list):
     existing = sheet.get_all_values()
     if not existing:
         rows = [fieldnames] + [[d.get(f, "") for f in fieldnames] for d in data_list]
-        sheet.update(rows, value_input_option='RAW')
+        sheet.update(rows, value_input_option='USER_ENTERED')
     else:
         rows = [[d.get(f, "") for f in fieldnames] for d in data_list]
-        sheet.append_rows(rows, value_input_option='RAW')
+        sheet.append_rows(rows, value_input_option='USER_ENTERED')
 
 # ============================================================
 # API FUNCTIONS

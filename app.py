@@ -209,7 +209,7 @@ def build_primary(product, store_name):
     image_link = images[0]['src'] if images else ""
     additional_images = ",".join([img['src'] for img in images[1:]]) + "," if len(images) > 1 else ""
     price = product.get('price', '') or product.get('regular_price', '')
-    price_str = f"{price} USD" if price else ""
+    price_str = f"{float(price):.2f} USD" if price else ""
 
     return {
         "id":                    str(product.get('id', '')),
